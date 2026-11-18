@@ -104,7 +104,7 @@ body.compact #holdOpt,body.compact #dropOpt{font-size:13px;padding:7px 9px}
 button.kakao{background:#FEE500;color:#191600;font-weight:800}.auth-msg{min-height:22px;color:#ffd60a;font-size:13px;white-space:pre-line;margin-top:8px}
 #memberBar{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;background:#10152a;border:1px solid #38437a;border-radius:10px;padding:10px;margin:10px 0}
 #rankRows{display:flex;flex-direction:column;gap:6px}.rank-row{display:grid;grid-template-columns:42px 1fr auto;gap:8px;align-items:center;background:#0a0d1a;border:1px solid #38437a;border-radius:9px;padding:9px}.rank-row.mine{border-color:var(--ac);background:#12263a}.rank-no{font-weight:800;color:var(--ac);text-align:center}.rank-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rank-score{font-weight:800;font-variant-numeric:tabular-nums}
-.rank-tabs{display:flex;gap:6px}.rank-tabs button{flex:1;padding:8px 5px}.rank-tabs button.active{background:var(--ac);color:#06202a;font-weight:800}
+.rank-tabs,.kind-tabs{display:flex;gap:6px;margin-bottom:6px}.rank-tabs button,.kind-tabs button{flex:1;padding:8px 5px}.rank-tabs button.active,.kind-tabs button.active{background:var(--ac);color:#06202a;font-weight:800}
 #memberArea{display:none}#profileSetup{display:none}
 
 .mode-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.mode-tabs button{flex:1 1 28%;padding:9px 5px}.mode-tabs button.active{background:var(--ac);color:#06202a;font-weight:800}
@@ -148,6 +148,7 @@ button.kakao{background:#FEE500;color:#191600;font-weight:800}.auth-msg{min-heig
     <div id="memberBar"><div>👤 <b id="memberNickname">플레이어</b> <span id="memberEmail" class="small"></span></div><span><button id="logoutBtn">로그아웃</button> <button id="deleteBtn" style="background:#5a1f2a">회원 탈퇴</button></span></div>
     <div class="card" id="rankCard">
       <h3>🏆 점수 랭킹</h3>
+      <div class="kind-tabs"><button data-kind="vs" class="active">⚔ 대전 랭킹</button><button data-kind="solo">🎯 싱글 랭킹</button></div>
       <div class="rank-tabs"><button data-period="daily" class="active">일간</button><button data-period="weekly">주간</button><button data-period="monthly">월간</button></div>
       <div id="myRank" class="small" style="margin:9px 0">내 순위 확인 중…</div>
       <div id="rankRows"><div class="small">랭킹을 불러오는 중…</div></div>
@@ -170,6 +171,11 @@ button.kakao{background:#FEE500;color:#191600;font-weight:800}.auth-msg{min-heig
 
   <!-- 처음 화면 -->
   <div id="menu">
+    <div class="card">
+      <h3>🎯 혼자 하기 (싱글플레이)</h3>
+      <div class="small">인터넷 연결 없이 혼자서 최고 기록에 도전하세요. 로그인 상태면 점수가 랭킹에 올라갑니다.</div>
+      <div class="row"><button id="soloBtn" class="pri" style="flex:1">▶ 싱글플레이 시작</button></div>
+    </div>
     <div class="card">
       <h3>① 친구를 초대하기 (방장)</h3>
       <div class="small">방을 만들면 <b>초대 링크</b>가 생깁니다. 카카오톡으로 보내고, 친구가 누르면 바로 게임이 시작됩니다.</div>
@@ -274,7 +280,7 @@ const sbReady = !!(window.supabase && SUPABASE_URL.startsWith('https://') && !SU
 const sb = sbReady ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 const $=id=>document.getElementById(id);
 /* ---------- 계정/랭킹 ---------- */
-let currentUser=null,currentProfile=null,currentNickname='',rankPeriod='daily',roundSaved=false;
+let currentUser=null,currentProfile=null,currentNickname='',rankPeriod='daily',rankKind='vs',roundSaved=false;
 const authMsg=t=>$('authMsg').textContent=t;
 function cleanNickname(v){return String(v||'').trim().replace(/[<>]/g,'').slice(0,16)}
 async function loadProfile(user){
@@ -366,7 +372,9 @@ async function loadRanking(){
   if(!sb||!currentUser)return;
   $('rankRows').innerHTML='<div class="small">랭킹을 불러오는 중…</div>';
   const start=periodStart(rankPeriod).toISOString();
-  const {data,error}=await sb.from('game_scores').select('user_id,score,created_at,profiles(nickname)').gte('created_at',start).order('score',{ascending:false}).limit(1000);
+  let q=sb.from('game_scores').select('user_id,score,created_at,profiles(nickname)').gte('created_at',start);
+  q=rankKind==='solo'?q.eq('result','solo'):q.or('result.is.null,result.neq.solo');
+  const {data,error}=await q.order('score',{ascending:false}).limit(1000);
   if(error){$('rankRows').textContent='랭킹 조회 실패: '+error.message;$('myRank').textContent='랭킹을 불러올 수 없습니다.';return;}
   const best=new Map();for(const r of (data||[])){const old=best.get(r.user_id);if(!old||r.score>old.score)best.set(r.user_id,r)}
   const rows=[...best.values()].sort((a,b)=>b.score-a.score||new Date(a.created_at)-new Date(b.created_at)).slice(0,100);
@@ -375,6 +383,7 @@ async function loadRanking(){
   rows.forEach((r,i)=>{const d=document.createElement('div');d.className='rank-row'+(r.user_id===currentUser.id?' mine':'');const no=document.createElement('div');no.className='rank-no';no.textContent=(i+1)+'위';const name=document.createElement('div');name.className='rank-name';name.textContent=r.profiles?.nickname||'이름 없는 플레이어';const scoreEl=document.createElement('div');scoreEl.className='rank-score';scoreEl.textContent=Number(r.score).toLocaleString()+'점';d.append(no,name,scoreEl);$('rankRows').appendChild(d)});
   const mine=rows.findIndex(r=>r.user_id===currentUser.id);$('myRank').textContent=mine>=0?'내 순위: '+(mine+1)+'위 · '+Number(rows[mine].score).toLocaleString()+'점':'내 순위: 상위 100위 밖 (기록을 더 쌓아보세요)';
 }
+document.querySelectorAll('.kind-tabs button').forEach(b=>b.onclick=()=>{rankKind=b.dataset.kind;document.querySelectorAll('.kind-tabs button').forEach(x=>x.classList.toggle('active',x===b));loadRanking()});
 document.querySelectorAll('.rank-tabs button').forEach(b=>b.onclick=()=>{rankPeriod=b.dataset.period;document.querySelectorAll('.rank-tabs button').forEach(x=>x.classList.toggle('active',x===b));loadRanking()});
 $('rankRefresh').onclick=loadRanking;
 if(sb){sb.auth.getSession().then(({data})=>syncAuth(data.session));sb.auth.onAuthStateChange((_event,session)=>{setTimeout(()=>syncAuth(session),0)});}
@@ -586,7 +595,7 @@ async function recordRound(result){
 /* ---------- 대결 방식 (1:1 / 1:2 / 2:2) ----------
    방장이 중심인 '별 모양' 연결입니다. 손님은 방장하고만 연결되고, 방장이 모두에게 전달합니다.
    방장의 입력도 손님과 같은 길(hostHandle)로 처리해서 규칙이 하나로 유지됩니다. */
-const MODES={'1v1':{label:'1:1',max:2,cap:[1,1]},'1v2':{label:'1:2',max:3,cap:[1,2]},'2v2':{label:'2:2',max:4,cap:[2,2]},'1v1v1':{label:'1:1:1',max:3,cap:[1,1,1],ffa:true},'1v1v1v1':{label:'1:1:1:1',max:4,cap:[1,1,1,1],ffa:true}};
+const MODES={'1v1':{label:'1:1',max:2,cap:[1,1]},'1v2':{label:'1:2',max:3,cap:[1,2]},'2v2':{label:'2:2',max:4,cap:[2,2]},'1v1v1':{label:'1:1:1',max:3,cap:[1,1,1],ffa:true},'1v1v1v1':{label:'1:1:1:1',max:4,cap:[1,1,1,1],ffa:true},'solo':{label:'솔로',max:1,cap:[1],solo:true}};
 let mode='1v1',MAXP=2,me=0,players=[],conns=new Map(),snaps={},teamWins=[0,0,0,0],inRound=false,startSize=[1,1],selMode='1v1';
 let peer=null,conn=null,snapTimer=null,pingTimer=null,lastRx=0,roomCode='';
 const st=t=>$('st').textContent=t;
@@ -595,6 +604,12 @@ const cleanName=v=>String(v||'').replace(/[<>]/g,'').trim().slice(0,16)||'플레
 const myTeam=()=>{const p=players.find(x=>x.id===me);return p?p.team:0};
 const teamCount=t=>players.filter(p=>p.team===t&&!p.gone).length;
 const liveCount=()=>players.filter(p=>!p.gone).length;
+let soloBest=0;try{soloBest=+localStorage.getItem('soloBest')||0}catch(e){}
+function startSolo(){
+  setMode('solo');isHost=true;me=0;players=[mkPlayer(0,myName(),0)];conns.clear();inRound=false;myRoom=null;
+  enterGame();
+  players[0].ready=true;myReady=true;checkStart();
+}
 function setMode(m){if(!MODES[m])return;mode=m;MAXP=MODES[m].max}
 function send(o){try{if(conn&&conn.open)conn.send(o)}catch(e){}}
 function sendTo(id,o){try{const c=conns.get(id);if(c&&c.open)c.send(o)}catch(e){}}
@@ -742,7 +757,7 @@ function hostDead(id){
 function hostCheckEnd(){
   if(!inRound)return;
   const teams=new Set(players.filter(p=>p.alive&&!p.gone).map(p=>p.team));
-  if(teams.size>1)return;
+  if(teams.size>(MODES[mode].solo?0:1))return;
   const win=teams.size===1?[...teams][0]:-1;
   inRound=false;
   bcast({t:'end',team:win});
@@ -751,7 +766,7 @@ function hostCheckEnd(){
 function checkStart(){
   if(!isHost||inRound||!(phase==='wait'||phase==='over'))return;
   const live=players.filter(p=>!p.gone);
-  if(live.length<MAXP||!live.every(p=>p.ready)||new Set(live.map(p=>p.team)).size<2)return;
+  if(live.length<MAXP||!live.every(p=>p.ready)||new Set(live.map(p=>p.team)).size<(MODES[mode].solo?1:2))return;
   const seed=Math.floor(Math.random()*2**31);
   startSize=MODES[mode].cap.map((_,i)=>teamCount(i));
   inRound=true;
@@ -770,8 +785,13 @@ function onEnd(win){
   if(win>=0)teamWins[win]++;
   phase='over';
   endText=win<0?'무승부':(won?'승리! 🎉':'패배…');
-  if(won)sfx('win');else if(!wasSpec&&win>=0)sfx('lose');
-  recordRound(won?'win':'loss');
+  if(MODES[mode].solo){
+    let best=0;try{best=+localStorage.getItem('soloBest')||0}catch(e){}
+    const isNew=score>best;if(isNew){best=score;try{localStorage.setItem('soloBest',String(best))}catch(e){}}
+    soloBest=best;
+    endText='게임 오버\n점수 '+score+' · 줄 '+lines+(isNew&&score>0?'\n🏆 최고 기록!':'\n최고 기록 '+best);
+  }else if(won)sfx('win');else if(!wasSpec&&win>=0)sfx('lose');
+  if(MODES[mode].solo){if(score>0)recordRound('solo')}else recordRound(won?'win':'loss');
   if(isHost){
     players=players.filter(p=>!p.gone);
     players.forEach(p=>{p.ready=false;p.alive=true});
@@ -887,6 +907,7 @@ async function copyText(t){
   }
 }
 $('mkRoom').onclick=makeRoom;
+$('soloBtn').onclick=startSolo;
 $('cpBtn').onclick=async()=>{
   await copyText(inviteText(inviteUrl()));
   st('복사했습니다! 카카오톡 대화창에 붙여넣어 보내세요.');
@@ -1272,13 +1293,14 @@ function draw(){
   drawOpps();
   $('bar').style.height=Math.min(100,pending/H*100)+'%';
   $('myInfo').textContent=`점수 ${score} · 줄 ${lines}\nLv ${level} · 받을 공격 ${pending}`+(combo>0?` · 콤보 ${combo}`:'');
-  $('score').textContent=MODES[mode].ffa?`내 승리 ${teamWins[myTeam()]}회`:`${mode==='1v1'?'나':'우리'} ${teamWins[myTeam()]} : ${teamWins[1-myTeam()]} 상대`;
+  $('score').textContent=MODES[mode].solo?('최고 '+Math.max(soloBest,score)):MODES[mode].ffa?`내 승리 ${teamWins[myTeam()]}회`:`${mode==='1v1'?'나':'우리'} ${teamWins[myTeam()]} : ${teamWins[1-myTeam()]} 상대`;
 }
 function ui(now){
   let t='';
   const need=liveCount()<MAXP;
   const rdy=need?(isHost?'참가자를 기다리는 중…\n방 코드 '+roomCode:'다른 참가자를 기다리는 중…'):(myReady?'모두 준비되길 기다리는 중…':'준비를 누르세요');
   const roster=()=>{
+    if(MODES[mode].solo)return '솔로 플레이'+(soloBest?'\n최고 기록 '+soloBest:'');
     const L=[MODES[mode].label+' 대결 · '+liveCount()+'/'+MAXP+'명'];
     if(MODES[mode].ffa){
       L.push('개인전: '+(players.filter(p=>!p.gone).map(p=>(p.id===me?'★':'')+p.name+(p.ready?'✔':'')).join(', ')||'(빈 자리)'));
@@ -1310,8 +1332,9 @@ function ui(now){
   const cmOn=canTeamChat(),cmEl=$('chatMode');
   if(cmEl.style.display!==(cmOn?'flex':'none'))cmEl.style.display=cmOn?'flex':'none';
   if(!cmOn&&chatTeam)setCM(false);
+  const cb=$('chatBtn');if(cb.style.display!==(MODES[mode].solo?'none':''))cb.style.display=MODES[mode].solo?'none':'';
   const tb=$('teamBtn'),ot=1-myTeam();
-  tb.style.display=(mode==='1v1'||MODES[mode].ffa)?'none':'inline-block';
+  tb.style.display=(mode==='1v1'||MODES[mode].ffa||MODES[mode].solo)?'none':'inline-block';
   tb.disabled=!((phase==='wait'||phase==='over')&&MODES[mode].cap[ot]>teamCount(ot));
   tb.textContent='팀 바꾸기 ('+(myTeam()?'B→A':'A→B')+')';
 }

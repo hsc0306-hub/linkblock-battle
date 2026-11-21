@@ -682,8 +682,10 @@ function hostRoster(){bcast(rosterMsg());const mp=players.find(p=>p.id===me);myR
 function hostOpen(c){
   if(c._ho)return;c._ho=true;
   const reject=why=>{try{c.send({t:'full',why})}catch(e){}setTimeout(()=>{try{c.close()}catch(e){}},600)};
-  if(inRound)return reject('게임이 진행 중인 방입니다');
-  const team=pickTeam();
+  const rj=performance.now()<rejoinUntil;
+  if(inRound&&!rj)return reject('게임이 진행 중인 방입니다');
+  let team=pickTeam();
+  if(rj&&team<0)team=0;
   if(liveCount()>=MAXP||team<0)return reject('이미 가득 찬 방입니다');
   let id=1;while(players.some(p=>p.id===id))id++;
   const p=mkPlayer(id,'',team);players.push(p);conns.set(id,c);
@@ -713,7 +715,12 @@ function hostHandle(from,m){
   const p=players.find(x=>x.id===from);
   if(!p||!m||typeof m!=='object')return;
   switch(m.t){
-    case'hello':p.name=cleanName(m.name);hostRoster();break;
+    case'hello':p.name=cleanName(m.name);
+      if(m.rj&&performance.now()<rejoinUntil&&from!==0){
+        const t=m.rj.team|0;if(t>=0&&t<MODES[mode].cap.length)p.team=t;
+        p.alive=!!m.rj.alive;
+      }
+      hostRoster();break;
     case'r':if(phase==='wait'||phase==='over'){p.ready=!!m.v;hostRoster();checkStart()}break;
     case'team':if(!inRound&&!MODES[mode].ffa&&(phase==='wait'||phase==='over')){
       const o=1-p.team;
@@ -766,7 +773,7 @@ function hostCheckEnd(){
 function checkStart(){
   if(!isHost||inRound||!(phase==='wait'||phase==='over'))return;
   const live=players.filter(p=>!p.gone);
-  if(live.length<MAXP||!live.every(p=>p.ready)||new Set(live.map(p=>p.team)).size<(MODES[mode].solo?1:2))return;
+  if(live.length<(migratedRoom?2:MAXP)||!live.every(p=>p.ready)||new Set(live.map(p=>p.team)).size<(MODES[mode].solo?1:2))return;
   const seed=Math.floor(Math.random()*2**31);
   startSize=MODES[mode].cap.map((_,i)=>teamCount(i));
   inRound=true;
@@ -804,15 +811,92 @@ function lose(){
 }
 
 /* --- 손님 쪽 --- */
-function setupConn(c){
+function setupConn(c,rj,fail){
   conn=c;
-  c.on('open',()=>{if(c===conn){enterGame();emit({t:'hello',name:myName()})}});
+  c.on('open',()=>{
+    if(c!==conn)return;c._o=1;
+    if(rj){migrating=false;lastRx=performance.now();emit({t:'hello',name:myName(),rj:{team:myTeam(),alive:phase==='play'||phase==='count'}})}
+    else{enterGame();emit({t:'hello',name:myName()})}
+  });
   c.on('data',m=>{if(c!==conn)return;lastRx=performance.now();onMsg(m)});
-  c.on('close',()=>{if(c===conn)onDisc()});
-  c.on('error',()=>{if(c===conn)onDisc()});
+  const gone=()=>{if(c!==conn)return;if(rj&&!c._o){fail&&fail();return}onDisc()};
+  c.on('close',gone);
+  c.on('error',gone);
+}
+/* --- 방장이 나갔을 때: 남은 사람 중 가장 번호가 낮은 사람이 새 방장이 되어 같은 방 코드로 이어갑니다 --- */
+let migrating=false,rejoinUntil=0,migratedRoom=false,rjRetry=null;
+function migFail(){
+  migrating=false;rjRetry=null;
+  onDisc('방장이 나가서 게임이 끝났습니다');
+}
+function tryMigrate(){
+  if(MODES[mode].solo||isHost)return false;
+  const rest=players.filter(p=>!p.gone&&p.id!==0);
+  if(rest.length<2||!rest.some(p=>p.id===me))return false;
+  const el=Math.min(...rest.map(p=>p.id));
+  migrating=true;
+  const c=conn;conn=null;try{c&&c.close()}catch(e){}
+  sysChat('방장이 나갔습니다. 방을 이어받는 중…');
+  if(el===me)becomeHost();else startRejoin();
+  return true;
+}
+function becomeHost(){
+  const mp=players.find(p=>p.id===me);
+  const wasRound=phase==='play'||phase==='count'||phase==='spec';
+  const alive=phase==='play'||phase==='count';
+  const myTm=mp?mp.team:0;
+  startSize=MODES[mode].cap.map((_,t)=>players.filter(p=>!p.gone&&p.id!==0&&p.team===t).length);
+  isHost=true;me=0;migratedRoom=true;dirStopped=false;myReady=false;
+  players=[mkPlayer(0,myName(),myTm)];players[0].alive=alive;
+  conns.clear();snaps={};inRound=wasRound;
+  rejoinUntil=0;hostTries=0;
+  try{peer&&peer.destroy()}catch(e){}
+  peer=null;
+  reopenHost();
+}
+function reopenHost(){
+  const hp=new Peer(PFX+roomCode);peer=hp;
+  hp.on('open',()=>{
+    if(hp!==peer)return;
+    migrating=false;
+    rejoinUntil=performance.now()+20000;
+    myRoom={code:roomCode,title:'이어서 하는 방',full:inRound};dirStart();updateRoomReg();
+    sysChat('내가 새 방장이 되었습니다');
+    setTimeout(()=>{rejoinUntil=0;if(isHost){hostCheckEnd();hostRoster();updateRoomReg()}},20500);
+  });
+  hp.on('connection',c=>{
+    if(c.open)hostOpen(c);else c.on('open',()=>hostOpen(c));
+    setTimeout(()=>{if(!c._ho){try{c.close()}catch(e){}}},20000);
+  });
+  hp.on('disconnected',()=>{try{if(hp===peer)hp.reconnect()}catch(e){}});
+  hp.on('error',err=>{
+    if(hp!==peer)return;
+    if(err.type==='unavailable-id'&&hostTries++<40){try{hp.destroy()}catch(e){}setTimeout(()=>{if(migrating&&isHost)reopenHost()},2000);return}
+    if(migrating){isHost=false;migFail()}
+  });
+}
+function startRejoin(){
+  let tries=0;
+  try{if(!peer||peer.destroyed||peer.disconnected){try{peer&&peer.destroy()}catch(e){}peer=new Peer()}}catch(e){peer=new Peer()}
+  const pp=peer;
+  pp.on('error',()=>{if(pp===peer&&migrating&&rjRetry)rjRetry()});
+  const go=()=>{
+    if(!migrating)return;
+    if(++tries>45)return migFail();
+    const doConn=()=>{
+      if(!migrating)return;
+      let done=false;
+      rjRetry=()=>{if(done)return;done=true;setTimeout(go,2000)};
+      const c=pp.connect(PFX+roomCode,{serialization:'json',reliable:true});
+      setupConn(c,true,()=>rjRetry&&rjRetry());
+    };
+    if(pp.open)doConn();else pp.once?pp.once('open',doConn):pp.on('open',doConn);
+  };
+  go();
 }
 function onDisc(txt){
-  if(phase==='dead'||phase==='lobby')return;
+  if(phase==='dead'||phase==='lobby'||migrating)return;
+  if(!txt&&tryMigrate())return;
   endText=txt||'방장과 연결이 끊어졌습니다';
   phase='dead';clearInterval(snapTimer);clearInterval(pingTimer);
   const c=conn;conn=null;try{c&&c.close()}catch(e){}
@@ -821,7 +905,7 @@ function onMsg(m){
   if(!m||typeof m!=='object')return;
   switch(m.t){
     case'welcome':
-      me=m.you|0;setMode(m.mode);
+      me=m.you|0;setMode(m.mode);snaps={};
       break;
     case'roster':
       setMode(m.mode);
@@ -1315,6 +1399,7 @@ function ui(now){
   else if(phase==='count')t=String(Math.max(1,Math.ceil((countEnd-now)/1000)));
   else if(phase==='spec')t='탈락!\n경기가 끝날 때까지\n기다려 주세요';
   else if(phase==='dead')t=(endText||'연결이 끊어졌습니다')+'\n\'나가기\'를 눌러\n처음 화면으로 돌아가세요';
+  if(migrating&&(phase==='wait'||phase==='over'))t='방장이 나가서\n방을 이어받는 중…';
   const m=$('msg');
   m.style.display=t?'flex':'none';
   if(m.textContent!==t)m.textContent=t;

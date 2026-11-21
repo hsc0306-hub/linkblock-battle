@@ -16,3 +16,4 @@ Actions > Build APK > Run workflow 후 Artifacts 의 tetris-apk 를 받아 설�
    Play Console 개인정보처리방침 URL, /delete-account.html 을 계정 삭제 URL에 입력
 * Capacitor 8(API 36)로 올렸으며, 이 환경에서는 실제 빌드를 못 해봤습니다. 첫 Actions 로그를 확인해 주세요.
 6) Supabase SQL Editor에서 supabase_chat_reports.sql 도 실행 (채팅 신고 저장. 신고는 Table Editor > chat_reports 에서 확인하고 직접 조치)
+7) 싱글 랭킹: Supabase SQL Editor에서 supabase_solo_ranking.sql 의 1번 조회만 먼저 실행해 result 제약이 있는지 확인 (없으면 끝)
